@@ -40,6 +40,7 @@ RUN set -eux; \
 	gosu nobody true
 
 RUN mkdir /docker-entrypoint-initdb.d
+RUN mkdir /backups
 
 ENV MARIADB_MAJOR 10.5
 ENV MARIADB_VERSION 1:10.5.5+maria~focal
@@ -91,6 +92,7 @@ RUN set -ex; \
 	echo '[mysqld]\nskip-host-cache\nskip-name-resolve' > /etc/mysql/conf.d/docker.cnf
 
 VOLUME /var/lib/mysql
+VOLUME /backups
 
 COPY docker-entrypoint.sh /usr/local/bin/
 ENTRYPOINT ["docker-entrypoint.sh"]

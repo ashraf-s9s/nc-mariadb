@@ -117,56 +117,35 @@ docker_temp_server_start() {
 	fi
 }
 
-# Do a temporary startup of the MySQL server, for bootstrap purposes
-docker_temp_server_bootstrap() {
-        mysqld --wsrep_cluster_address=gcomm:// --socket="${SOCKET}" &
-        mysql_note "Waiting for server to bootstrap"
-        local i
-        for i in {30..0}; do
-	        # only use the root password if the database has already been initializaed
-	        # so that it won't try to fill in a password file when it hasn't been set yet
-	        extraArgs=()
-	        if [ -z "$DATABASE_ALREADY_EXISTS" ]; then
-			extraArgs+=( '--dont-use-mysql-root-password' )
-		fi
-		#if docker_process_sql "${extraArgs[@]}" --database=mysql <<<'SELECT 1' &> /dev/null; then
-		if docker_process_sql --database=mysql <<<'SELECT 1' &> /dev/null; then
-		        break
-		fi
-		sleep 1
-	done
-	if [ "$i" = 0 ]; then
-	        mysql_error "Unable to bootstrap the server."
+# Bootstrap the MariaDB server, only if BOOTSTRAP=1
+docker_server_bootstrap() {
+	vars="$@"
+	if echo $vars | tr ' ' '\n' | grep -e 'wsrep.*cluster.*address' &> /dev/null; then
+		# we have to strip down the wsrep_cluster_address to 'gcomm://' only for bootstrapping process, while keeping other vars
+		bootstrap_vars=$(echo $vars | tr ' ' '\n' | sed "s|--wsrep.*cluster.*address=.*|--wsrep_cluster_address=gcomm:\/\/|g" | tr '\n' ' ')
 	fi
+
+	if [ ! -z "$FORCE_BOOTSTRAP" ] && [ "$FORCE_BOOTSTRAP" -eq 1 ]; then
+		# check the Galera state, only if FORCE_BOOTSTRAP=1
+		GRASTATE=/var/lib/mysql/grastate.dat
+		mysql_note "FORCE_BOOTSTRAP=1, thus checking the content of $GRASTATE"
+		mysql_note "$(cat $GRASTATE)"
+		SAFE=$(grep safe_to_bootstrap $GRASTATE | awk {'print $2'})
+
+		if [ $SAFE -eq 0 ]; then
+			# replace the safe_to_bootstrap value to 1 to force bootstrap
+			mysql_note "Safe_to_bootstrap is set to 0. Will reset this to 1."
+			sed -i 's|^safe_to_bootstrap:.*|safe_to_bootstrap: 1|g' $GRASTATE
+		else
+			mysql_note "Safe_to_bootstrap is already set to 1. Moving on to bootstrap."
+		fi
+	fi
+
+	mysql_note "Variables to pass to MariaDB: $bootstrap_vars"
+	mysql_note "Bootstrapping the server"
+	exec $bootstrap_vars
 }
 
-mysql_check_others() {
-	local args=$@
-	local interval=10
-
-	wsrep_cluster_address=$(echo $args | tr ' ' '\n' | grep -e '^--wsrep.*cluster.*address.*')
-	cluster_address=$(echo $args | tr ' ' '\n' | grep -e '^--wsrep.*cluster.*address.*' | sed 's|^--wsrep-cluster-address=gcomm://||g' | sed 's|^--wsrep_cluster_address=gcomm://||g')
-	count_nodes=$(echo $cluster_address | sed 's|,| |g' | wc -w)
-	mysql_note "wsrep_cluster_address=$wsrep_cluster_address"
-	mysql_note "Total nodes in the cluster: $count_nodes"
-
-	local i
-	for i in {30..0}; do
-                # only use the root password if the database has already been initializaed
-                # so that it won't try to fill in a password file when it hasn't been set yet
-                extraArgs=()
-                if [ -z "$DATABASE_ALREADY_EXISTS" ]; then
-                        extraArgs+=( '--dont-use-mysql-root-password' )
-                fi
-		#if docker_process_sql "${extraArgs[@]}" --database=mysql <<<'SELECT 1' &> /dev/null; then
-		# check the Galera cluster size and see if it matches the total node counts expeteced in wsrep_cluster_address. If it does, restart the node with standard wsrep_cluster_address instead of gcomm://
-		if docker_process_sql2 <<< "SHOW GLOBAL STATUS LIKE 'wsrep_cluster_size'" | awk {'print $2'} | grep $count_nodes &> /dev/null; then
-                        break
-                fi
-                sleep $interval
-        done
-
-}
 
 # Stop the server. When using a local socket file mysqladmin will block until
 # the shutdown is complete.
@@ -253,18 +232,6 @@ docker_process_sql() {
 	mysql --defaults-extra-file=<( _mysql_passfile "${passfileArgs[@]}") --protocol=socket -uroot -hlocalhost --socket="${SOCKET}" "$@"
 }
 
-docker_process_sql2() {
-        passfileArgs=()
-        if [ '--dont-use-mysql-root-password' = "$1" ]; then
-                passfileArgs+=( "$1" )
-                shift
-        fi
-        # args sent in can override this db, since they will be later in the command
-        if [ -n "$MYSQL_DATABASE" ]; then
-                set -- --database="$MYSQL_DATABASE" "$@"
-        fi
-        mysql --defaults-extra-file=<( _mysql_passfile "${passfileArgs[@]}") --protocol=socket -uroot -hlocalhost --socket="${SOCKET}" -A -Bs "$@"
-															}
 
 # Initializes database with timezone info and root password, plus optional extra db/user
 docker_setup_db() {
@@ -419,41 +386,17 @@ _main() {
 			mysql_note "MySQL init process done. Ready for start up."
 			echo
 		fi
-
-		# if bootstrap flag is set, run bootstrap function
-		if [ ! -z "$BOOTSTRAP" ] && [ "$BOOTSTRAP" -eq 1 ]; then
-			mysql_note "Bootstrapping the server"
-			docker_temp_server_bootstrap "$@"
-			mysql_note "The server is bootstrapped. Waiting for others to join before falling back to the standard cluster address"
-			mysql_note "Observing the cluster size.."
-			mysql_check_others "$@"
-			
-                        mysql_note "Stopping this server to rejoin with the correct gcomm address:"
-			mysql_note "$wsrep_cluster_address"
-                        docker_temp_server_stop
-                        mysql_note "Temporary bootstrapped server stopped"
-		fi
 	fi
 
 	# if bootstrap flag is set, run bootstrap function
 	if [ ! -z "$BOOTSTRAP" ] && [ "$BOOTSTRAP" -eq 1 ]; then
-		mysql_note "Bootstrapping the server"
-		docker_temp_server_bootstrap "$@"
-		mysql_note "The server is bootstrapped. Waiting for others to join before falling back to the standard cluster address"
-		mysql_note "Observing the cluster size.."
-		mysql_check_others "$@"
-
-		mysql_note "Stopping this server to rejoin with the correct gcomm address:"
-		mysql_note "$wsrep_cluster_address"
-
-		echo
-		docker_temp_server_stop
-		mysql_note "Temporary bootstrapped server stopped"
-		mysql_note "Starting the node with $wsrep_cluster_address"
-		echo
+		mysql_note "BOOTSTRAP=1, trying to bootstrap the server instead of starting it"
+		docker_server_bootstrap "$@"
+	else
+		mysql_note "Starting the server"
+		exec "$@"
 	fi
 
-	exec "$@"
 }
 
 # If we are sourced from elsewhere, don't perform any further actions
