@@ -76,6 +76,8 @@ RUN set -ex; \
 		socat \
 		openssl \
 		pv \
+		pigz \
+		rsync \
 		tzdata \
 	; \
 	rm -rf /var/lib/apt/lists/*; \
