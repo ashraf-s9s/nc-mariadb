@@ -1,4 +1,5 @@
 FROM ubuntu:focal
+MAINTAINER Ashraf Sharif <ashraf@severalnines.com>
 
 # add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
 RUN groupadd -r mysql && useradd -r -g mysql mysql
