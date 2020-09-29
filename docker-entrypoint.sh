@@ -128,16 +128,22 @@ docker_server_bootstrap() {
 	if [ ! -z "$FORCE_BOOTSTRAP" ] && [ "$FORCE_BOOTSTRAP" -eq 1 ]; then
 		# check the Galera state, only if FORCE_BOOTSTRAP=1
 		GRASTATE=/var/lib/mysql/grastate.dat
-		mysql_note "FORCE_BOOTSTRAP=1, thus checking the content of $GRASTATE"
-		mysql_note "$(cat $GRASTATE)"
-		SAFE=$(grep safe_to_bootstrap $GRASTATE | awk {'print $2'})
 
-		if [ $SAFE -eq 0 ]; then
-			# replace the safe_to_bootstrap value to 1 to force bootstrap
-			mysql_note "Safe_to_bootstrap is set to 0. Will reset this to 1."
-			sed -i 's|^safe_to_bootstrap:.*|safe_to_bootstrap: 1|g' $GRASTATE
+		if [ -e $GRASTATE ]; then
+			mysql_note "FORCE_BOOTSTRAP=1, thus checking the content of $GRASTATE"
+			mysql_note "$(cat $GRASTATE)"
+			SAFE=$(grep safe_to_bootstrap $GRASTATE | awk {'print $2'})
+
+			if [ $SAFE -eq 0 ]; then
+				# replace the safe_to_bootstrap value to 1 to force bootstrap
+				mysql_note "Safe_to_bootstrap is set to 0. Will reset this to 1."
+				sed -i 's|^safe_to_bootstrap:.*|safe_to_bootstrap: 1|g' $GRASTATE
+			else
+				mysql_note "Safe_to_bootstrap is already set to 1. Moving on to bootstrap."
+			fi
 		else
-			mysql_note "Safe_to_bootstrap is already set to 1. Moving on to bootstrap."
+			mysql_note "FORCE_BOOTSTRAP=1, but unable to locate $GRASTATE"
+			mysql_note "This is probably a new server. Moving on to bootstrap"
 		fi
 	fi
 
